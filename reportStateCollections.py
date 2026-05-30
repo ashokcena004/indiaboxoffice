@@ -553,7 +553,7 @@ def process_bms_city_simple(state_name, city_name, city_slug, city_counter_str):
                 print(f"   🔍 Current URL: {driver.current_url}")
                 print(f"   🔍 Title: {driver.title}")
                 print(f"   🔍 HTML Length: {len(driver.page_source)}")
-                print(f"   🔍 HTML Preview: {driver.page_source[:500]}")
+                print(f"   🔍 HTML Preview: {driver.page_source}")
             except Exception as e:
                 print(f"   🔍 Debug failed: {e}")
 
