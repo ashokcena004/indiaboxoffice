@@ -273,6 +273,27 @@ def generate_hybrid_states_html_report(all_results, output_path, movie_name="Mov
     
     total_occ_color = get_occupancy_color(total_occupancy)
     # --- 6. BUILD HTML ---
+    city_toggle_html = ""
+
+    if total_cities > 50:
+        city_toggle_html = f'''
+        <div class="toggle-container">
+            <button class="show-all-btn" onclick="toggleRows('cityTable')">
+                🏙️ Show All {total_cities} Cities
+            </button>
+        </div>
+        '''
+
+    venue_toggle_html = ""
+
+    if total_venues > 50:
+        venue_toggle_html = f'''
+        <div class="toggle-container">
+            <button class="show-all-btn" onclick="toggleRows('venueTable')">
+                🎪 Show All {total_venues} Venues
+            </button>
+        </div>
+        '''
     html_content = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -706,7 +727,7 @@ def generate_hybrid_states_html_report(all_results, output_path, movie_name="Mov
                 </tbody>
             </table>
         </div>
-        {f'<div class="toggle-container"><button class="show-all-btn" onclick="toggleRows(\'cityTable\')">🏙️ Show All {total_cities} Cities</button></div>' if total_cities > 50 else ''}
+        {city_toggle_html}
     </section>
 
     <!-- Theatre Rankings -->
@@ -733,7 +754,7 @@ def generate_hybrid_states_html_report(all_results, output_path, movie_name="Mov
                 </tbody>
             </table>
         </div>
-        {f'<div class="toggle-container"><button class="show-all-btn" onclick="toggleRows(\'venueTable\')">🎪 Show All {total_venues} Venues</button></div>' if total_venues > 50 else ''}
+        {venue_toggle_html}
     </section>
 
 </main>
