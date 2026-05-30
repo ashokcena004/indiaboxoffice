@@ -425,6 +425,11 @@ def extract_initial_state_from_page(driver, url):
             
         # Fallback to parsing page source
         html = driver.page_source
+        if "Sorry, you have been blocked" in html:
+            print("\n🚫 CLOUDFLARE BLOCK DETECTED")
+            print("URL:", driver.current_url)
+            print("Title:", driver.title)
+            return None
         marker = "window.__INITIAL_STATE__"
         start = html.find(marker)
         if start == -1: return None
@@ -548,15 +553,6 @@ def process_bms_city_simple(state_name, city_name, city_slug, city_counter_str):
         if not state_data:
             print(f"   ⚠️  [BMS] {city_counter_str} {city_name:<15} — skipped (no state data)")
             print(f"   🔍 URL: {url}")
-
-            try:
-                print(f"   🔍 Current URL: {driver.current_url}")
-                print(f"   🔍 Title: {driver.title}")
-                print(f"   🔍 HTML Length: {len(driver.page_source)}")
-                print(f"   🔍 HTML Preview: {driver.page_source}")
-            except Exception as e:
-                print(f"   🔍 Debug failed: {e}")
-
             return []
             
         venues = extract_venues(state_data)
@@ -682,7 +678,7 @@ def process_bms_city_simple(state_name, city_name, city_slug, city_counter_str):
                         results_all.append(data)
                 except Exception:
                     pass
-                try: time.sleep(2)
+                try: time.sleep(random.uniform(1, 2))
                 except Exception: pass
     except Exception as e:
         print(f"   ❌ [BMS] {city_counter_str} {city_name:<15} — Error: {str(e).splitlines()[0]}")
