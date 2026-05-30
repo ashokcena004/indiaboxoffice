@@ -672,7 +672,7 @@ def process_bms_city_simple(state_name, city_name, city_slug, city_counter_str):
                         results_all.append(data)
                 except Exception:
                     pass
-                try: time.sleep(1)
+                try: time.sleep(2)
                 except Exception: pass
     except Exception as e:
         print(f"   ❌ [BMS] {city_counter_str} {city_name:<15} — Error: {str(e).splitlines()[0]}")
