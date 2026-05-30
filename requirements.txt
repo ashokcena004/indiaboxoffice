@@ -8,3 +8,5 @@ webdriver-manager
 openpyxl
 pandas
 matplotlib
+undetected-chromedriver
+setuptools

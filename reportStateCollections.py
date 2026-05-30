@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
-from selenium import webdriver
+import undetected_chromedriver as uc
 from selenium.webdriver.chrome.options import Options
 from openpyxl import Workbook
 from fake_useragent import UserAgent
@@ -52,7 +52,7 @@ BOOKED_STATES  = {"2"}
 
 # Performance tuning
 DISTRICT_CITY_WORKERS = 12    # parallel city workers for District (pure HTTP)
-BMS_DRIVER_POOL_SIZE  = 5     # cities processed in parallel (each gets a fresh Chrome)
+BMS_DRIVER_POOL_SIZE  = 10     # cities processed in parallel (each gets a fresh Chrome)
 DISTRICT_RATE         = 5     # max requests/second to district.in (conservative to avoid 403)
 
 
@@ -60,7 +60,6 @@ DISTRICT_RATE         = 5     # max requests/second to district.in (conservative
 # ── 2. GLOBAL STATE & LOCKS ──────────────────────────────────────────────────
 # =============================================================================
 
-# Sets to keep track of processed session IDs (SIDs) across workers
 _global_bms_sids = set()
 _global_bms_sids_lock = threading.Lock()
 
@@ -368,18 +367,86 @@ def run_district(all_cities):
 # ── 5. BMS DATA EXTRACTION ───────────────────────────────────────────────────
 # =============================================================================
 
+def _patch_browser(driver):
+    """
+    Injects JS via CDP to mask automation signals that Cloudflare detects.
+    Must be called immediately after driver creation, before any get().
+    """
+    try:
+        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": """
+                // Remove the webdriver flag — Cloudflare's #1 detection signal
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+                // Spoof realistic plugin list (empty = headless browser)
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => {
+                        const arr = [
+                            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+                            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+                            { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
+                        ];
+                        arr.__proto__ = PluginArray.prototype;
+                        return arr;
+                    }
+                });
+
+                // Spoof languages (empty array = headless giveaway)
+                Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+
+                // Inject chrome runtime object (missing in headless)
+                if (!window.chrome) window.chrome = {};
+                if (!window.chrome.runtime) window.chrome.runtime = {};
+
+                // Spoof permissions API to return 'prompt' instead of error
+                const originalQuery = window.navigator.permissions.query;
+                window.navigator.permissions.query = (parameters) =>
+                    parameters.name === 'notifications'
+                        ? Promise.resolve({ state: Notification.permission })
+                        : originalQuery(parameters);
+            """
+        })
+    except Exception as e:
+        print(f"   ⚠️  CDP patch failed (non-fatal): {e}")
+
+
+def _wait_for_cloudflare_challenge(driver, timeout=15):
+    """
+    Waits for Cloudflare's JS challenge page to complete.
+    Returns True if page is clear, False if hard-blocked or timed out.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        title = driver.title.lower()
+        page_source = driver.page_source
+
+        # Hard block — IP-level ban, no point retrying
+        if "sorry, you have been blocked" in page_source.lower():
+            print("   🚫 [BMS] Hard Cloudflare block detected (IP banned)")
+            return False
+
+        # Challenge page — keep waiting for JS to solve it
+        if "just a moment" in title or "checking your browser" in title or "please wait" in title:
+            time.sleep(0.5)
+            continue
+
+        # Cloudflare finished, real page loaded
+        return True
+
+    print("   ⏱️  [BMS] Cloudflare challenge timed out")
+    return False
+
+
+_uc_init_lock = threading.Lock()
+
 def _create_chrome_driver(proxy=None):
-    """Creates a configured headless Chrome driver for BMS."""
     ua = UserAgent()
-    options = Options()
-    options.add_argument(f"user-agent={ua.random}")
-    options.add_argument("--headless=new")
-    options.add_argument("start-maximized")
-    options.add_argument("--disable-web-security")
-    options.add_argument("--disable-site-isolation-trials")
-    options.add_argument("disable-csp")
+    options = uc.ChromeOptions()
+    options.add_argument(f"--user-agent={ua.random}")
     options.add_argument("--disable-blink-features=AutomationControlled")
-    # Optimize loading by disabling images and notifications
+    options.add_argument("--disable-web-security")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
     prefs = {
         "profile.managed_default_content_settings.images": 2,
         "profile.default_content_setting_values.notifications": 2,
@@ -387,12 +454,32 @@ def _create_chrome_driver(proxy=None):
     options.add_experimental_option("prefs", prefs)
     if proxy:
         options.add_argument(f"--proxy-server={proxy}")
-    return webdriver.Chrome(options=options)
+
+    # Serialize driver creation — uc patches chromedriver.exe on first run
+    # and Windows locks the file, causing [WinError 183] under parallel threads
+    with _uc_init_lock:
+        driver = uc.Chrome(
+            options=options,
+            headless=True,
+            version_main=148,   # ← pin to your installed Chrome version
+        )
+
+    _patch_browser(driver)
+    return driver
+
 
 def extract_initial_state_from_page(driver, url):
-    """Loads BMS page and extracts the embedded JSON state."""
+    """
+    Loads BMS page, waits for Cloudflare challenge if present,
+    then extracts the embedded __INITIAL_STATE__ JSON.
+    """
     try:
         driver.get(url)
+
+        # Wait for Cloudflare challenge to clear before reading the page
+        if not _wait_for_cloudflare_challenge(driver, timeout=15):
+            return None
+
         driver.set_script_timeout(12)
         try:
             result = driver.execute_async_script("""
@@ -422,27 +509,37 @@ def extract_initial_state_from_page(driver, url):
                 return json.loads(result)
         except Exception:
             pass
-            
-        # Fallback to parsing page source
+
+        # Fallback: parse from raw page source
         html = driver.page_source
-        if "Sorry, you have been blocked" in html:
-            print("\n🚫 CLOUDFLARE BLOCK DETECTED")
-            print("URL:", driver.current_url)
-            print("Title:", driver.title)
+
+        # Double-check for block after challenge wait (edge case)
+        if "sorry, you have been blocked" in html.lower():
+            print("\n🚫 [BMS] CLOUDFLARE HARD BLOCK (post-challenge)")
+            print("   URL:", driver.current_url)
             return None
+
         marker = "window.__INITIAL_STATE__"
         start = html.find(marker)
-        if start == -1: return None
+        if start == -1:
+            return None
+
         start = html.find("{", start)
-        brace_count = 0; end = start
+        brace_count = 0
+        end = start
         while end < len(html):
-            if html[end] == "{": brace_count += 1
-            elif html[end] == "}": brace_count -= 1
-            if brace_count == 0: break
+            if html[end] == "{":
+                brace_count += 1
+            elif html[end] == "}":
+                brace_count -= 1
+            if brace_count == 0:
+                break
             end += 1
         return json.loads(html[start:end + 1])
+
     except Exception:
         return None
+
 
 def extract_venues(state):
     """Extracts venue data from the BMS initial state JSON."""
@@ -678,8 +775,8 @@ def process_bms_city_simple(state_name, city_name, city_slug, city_counter_str):
                         results_all.append(data)
                 except Exception:
                     pass
-                try: time.sleep(random.uniform(1, 2))
-                except Exception: pass
+                # try: time.sleep(random.uniform(1, 2))
+                # except Exception: pass
     except Exception as e:
         print(f"   ❌ [BMS] {city_counter_str} {city_name:<15} — Error: {str(e).splitlines()[0]}")
     finally:
@@ -794,7 +891,7 @@ def merge_data(all_dist_data, all_bms_data):
                 break
 
         if not match and not bms.get('is_fallback', False):
-            # 2. Strong Deduplication: Compare exact prices and the count of seats per price category, combined with venue validation.
+            # 2. Strong Deduplication: Compare exact prices and seat counts per category, with venue validation.
             b_sig = bms.get('price_seat_signature', [])
             for c in candidates:
                 d_sig = c.get('price_seat_signature', [])
@@ -806,7 +903,7 @@ def merge_data(all_dist_data, all_bms_data):
                             break
 
         if not match and not bms.get('is_fallback', False):
-            # 3. Moderate Deduplication: Compare total seat counts per category, without price, combined with venue validation.
+            # 3. Moderate Deduplication: Compare total seat counts per category, with venue validation.
             b_seats = sorted(bms.get('seat_category_map', {}).values())
             for c in candidates:
                 d_seats = sorted(c.get('seat_category_map', {}).values())
@@ -818,7 +915,7 @@ def merge_data(all_dist_data, all_bms_data):
                             break
 
         if not match and candidates:
-            # 4. Weak Deduplication: Fall back to validating if both shows share the exact same ticket price points and venue.
+            # 4. Weak Deduplication: Validate same ticket price points and venue.
             b_prices = {p for p in bms.get('price_seat_map', {}).keys() if p > 0}
             for c in candidates:
                 d_prices = {p for p in c.get('price_seat_map', {}).keys() if p > 0}
@@ -837,8 +934,8 @@ def merge_data(all_dist_data, all_bms_data):
 
         if match:
             candidates.remove(match)
-            # If BMS data is genuinely scraped (no fallbacks), it is the most accurate source of truth.
-            # If BMS used a fallback, District is preferred as it might have a better recent cache.
+            # BMS data (if not fallback) is the most accurate source of truth.
+            # If BMS used a fallback, District is preferred as it may have better cache.
             if not bms.get('is_fallback', False):
                 match.update({
                     'total_tickets': bms['total_tickets'],
@@ -968,6 +1065,15 @@ def get_report_base_name(movie_name, show_date, report_type):
 # =============================================================================
 
 if __name__ == "__main__":
+    # Pre-warm undetected_chromedriver so binary is patched before parallel workers start
+    print("🔧 Pre-warming undetected_chromedriver...")
+    try:
+        _warmup = _create_chrome_driver()
+        _warmup.quit()
+        print("✅ ChromeDriver ready")
+    except Exception as e:
+        print(f"⚠️  Warmup failed (non-fatal): {e}")
+
     if not os.path.exists(DISTRICT_CONFIG_PATH) or not os.path.exists(BMS_CONFIG_PATH):
         print("❌ Config files missing. Exiting.")
         exit(1)
@@ -1005,7 +1111,6 @@ if __name__ == "__main__":
         show_date_fmt = datetime.strptime(SHOW_DATE, "%Y-%m-%d").strftime("%d %b %Y")
         base_name = get_report_base_name(movie_name, SHOW_DATE, "States")
 
-        # Generate aggregated reports
         generate_consolidated_excel(final_data, "reports/latest.xlsx")
 
         generate_premium_states_image_report(
