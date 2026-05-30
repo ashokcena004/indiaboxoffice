@@ -52,7 +52,7 @@ BOOKED_STATES  = {"2"}
 
 # Performance tuning
 DISTRICT_CITY_WORKERS = 12    # parallel city workers for District (pure HTTP)
-BMS_DRIVER_POOL_SIZE  = 10     # cities processed in parallel (each gets a fresh Chrome)
+BMS_DRIVER_POOL_SIZE  = 5     # cities processed in parallel (each gets a fresh Chrome)
 DISTRICT_RATE         = 5     # max requests/second to district.in (conservative to avoid 403)
 
 
@@ -775,8 +775,8 @@ def process_bms_city_simple(state_name, city_name, city_slug, city_counter_str):
                         results_all.append(data)
                 except Exception:
                     pass
-                # try: time.sleep(random.uniform(1, 2))
-                # except Exception: pass
+                try: time.sleep(random.uniform(1, 2))
+                except Exception: pass
     except Exception as e:
         print(f"   ❌ [BMS] {city_counter_str} {city_name:<15} — Error: {str(e).splitlines()[0]}")
     finally:
