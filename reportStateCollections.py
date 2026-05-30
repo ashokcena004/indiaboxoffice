@@ -52,7 +52,7 @@ BOOKED_STATES  = {"2"}
 
 # Performance tuning
 DISTRICT_CITY_WORKERS = 12    # parallel city workers for District (pure HTTP)
-BMS_DRIVER_POOL_SIZE  = 10     # cities processed in parallel (each gets a fresh Chrome)
+BMS_DRIVER_POOL_SIZE  = 5     # cities processed in parallel (each gets a fresh Chrome)
 DISTRICT_RATE         = 5     # max requests/second to district.in (conservative to avoid 403)
 
 
@@ -547,6 +547,16 @@ def process_bms_city_simple(state_name, city_name, city_slug, city_counter_str):
         state_data = extract_initial_state_from_page(driver, url)
         if not state_data:
             print(f"   ⚠️  [BMS] {city_counter_str} {city_name:<15} — skipped (no state data)")
+            print(f"   🔍 URL: {url}")
+
+            try:
+                print(f"   🔍 Current URL: {driver.current_url}")
+                print(f"   🔍 Title: {driver.title}")
+                print(f"   🔍 HTML Length: {len(driver.page_source)}")
+                print(f"   🔍 HTML Preview: {driver.page_source[:500]}")
+            except Exception as e:
+                print(f"   🔍 Debug failed: {e}")
+
             return []
             
         venues = extract_venues(state_data)
