@@ -599,7 +599,7 @@ def process_bms_city_simple(state_name, city_name, city_slug, city_counter_str):
                                     base_sid = int(sid)
                                     for offset in range(7, 0, -1):
                                         target_sid = str(base_sid + offset)
-                                        # time.sleep(1)
+                                        time.sleep(1)
                                         n_enc, _ = get_single_seat_layout(driver, v_code, target_sid)
                                         if n_enc:
                                             n_dec = decrypt_data(n_enc)
@@ -672,7 +672,7 @@ def process_bms_city_simple(state_name, city_name, city_slug, city_counter_str):
                         results_all.append(data)
                 except Exception:
                     pass
-                # try: time.sleep(1)
+                try: time.sleep(1)
                 # except Exception: pass
     except Exception as e:
         print(f"   ❌ [BMS] {city_counter_str} {city_name:<15} — Error: {str(e).splitlines()[0]}")
