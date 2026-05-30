@@ -21,10 +21,6 @@ from fake_useragent import UserAgent
 
 from utils.generatePremiumStatesImageReport import generate_premium_states_image_report
 from utils.generateHybridStatesHTMLReport import generate_hybrid_states_html_report
-from utils.sendReportEmail import send_collection_report
-
-# Load environment variables
-load_dotenv()
 
 # =============================================================================
 # ── 1. CONFIGURATION ─────────────────────────────────────────────────────────
@@ -961,67 +957,6 @@ def get_report_base_name(movie_name, show_date, report_type):
     date_str = datetime.strptime(show_date, "%Y-%m-%d").strftime("%d%b")
     return f"{slug}_{date_str}_{report_type}Report"
 
-def load_previous_report_data(base_name, reports_dir="reports"):
-    """Loads past show data to merge newly extracted shows."""
-    path = os.path.join(reports_dir, f"{base_name}_data.json")
-    if os.path.exists(path):
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            return data
-        except Exception:
-            pass
-    return None
-
-def save_report_data(final_data, base_name, reports_dir="reports"):
-    """Saves the final merged show data into a JSON file."""
-    path = os.path.join(reports_dir, f"{base_name}_data.json")
-    serializable = []
-    for show in final_data:
-        s = {}
-        for k, v in show.items():
-            s[k] = list(v) if isinstance(v, set) else v
-        serializable.append(s)
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(serializable, f, ensure_ascii=False, indent=2)
-
-def merge_with_previous_data(new_data, old_data):
-    """Combines current scraping session data with previously cached show collections."""
-    if not old_data:
-        return new_data
-
-    new_sids = set()
-    for show in new_data:
-        if show.get('bms_sid'): new_sids.add(show['bms_sid'])
-        if show.get('district_sid'): new_sids.add(show['district_sid'])
-
-    merged = list(new_data)
-    preserved = 0
-    for show in old_data:
-        old_show_sids = {s for s in (show.get('bms_sid'), show.get('district_sid')) if s}
-        if not old_show_sids and show.get('sid'):
-            old_show_sids = {show['sid']}
-        if old_show_sids & new_sids:
-            continue
-        merged.append(show)
-        preserved += 1
-
-    if preserved:
-        print(f"   📌 Preserved {preserved} shows from previous run")
-
-    return merged
-
-def archive_previous_reports(base_name, reports_dir="reports", old_reports_dir="old_reports"):
-    """Moves older report files into an old_reports directory to avoid overwriting them."""
-    os.makedirs(old_reports_dir, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    for ext in ['.xlsx', '.png', '.html', '_data.json']:
-        src = os.path.join(reports_dir, f"{base_name}{ext}")
-        if os.path.exists(src):
-            dest = os.path.join(old_reports_dir, f"{base_name}_{ts}{ext}")
-            shutil.move(src, dest)
-
-
 # =============================================================================
 # ── 8. MAIN EXECUTION ────────────────────────────────────────────────────────
 # =============================================================================
@@ -1063,47 +998,23 @@ if __name__ == "__main__":
         movie_name = extract_movie_name_from_url(DISTRICT_URL_TEMPLATE.format(city="city"))
         show_date_fmt = datetime.strptime(SHOW_DATE, "%Y-%m-%d").strftime("%d %b %Y")
         base_name = get_report_base_name(movie_name, SHOW_DATE, "States")
-        is_show_day = SHOW_DATE == datetime.now().strftime("%Y-%m-%d")
-        current_run_data = list(final_data)
-
-        old_data = load_previous_report_data(base_name)
-        if old_data:
-            final_data = merge_with_previous_data(final_data, old_data)
-
-        archive_previous_reports(base_name)
 
         # Generate aggregated reports
-        generate_consolidated_excel(final_data, f"{base_name}.xlsx")
-        generate_premium_states_image_report(final_data, f"reports/{base_name}.png", movie_name=movie_name, show_date=show_date_fmt)
-        generate_hybrid_states_html_report(final_data, f"reports/{base_name}.html", movie_name=movie_name, show_date=show_date_fmt)
-        save_report_data(final_data, base_name)
+        generate_consolidated_excel(final_data, "reports/latest.xlsx")
 
-        # Generate snapshot reports
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        snapshot_name = f"{base_name}_{ts}"
-        os.makedirs("old_reports", exist_ok=True)
-        generate_consolidated_excel(current_run_data, f"old_reports/{snapshot_name}.xlsx")
-        generate_premium_states_image_report(current_run_data, f"old_reports/{snapshot_name}.png", movie_name=movie_name, show_date=show_date_fmt)
-        generate_hybrid_states_html_report(current_run_data, f"old_reports/{snapshot_name}.html", movie_name=movie_name, show_date=show_date_fmt)
+        generate_premium_states_image_report(
+            final_data,
+            "reports/latest.png",
+            movie_name=movie_name,
+            show_date=show_date_fmt
+        )
 
-        aggregated_files = [f"reports/{base_name}.xlsx", f"reports/{base_name}.png", f"reports/{base_name}.html"]
-        snapshot_files = [f"old_reports/{snapshot_name}.xlsx", f"old_reports/{snapshot_name}.png", f"old_reports/{snapshot_name}.html"]
-
-        if is_show_day and old_data:
-            send_collection_report(
-                report_type="states", movie_name=movie_name, show_date=show_date_fmt,
-                subject_label="Tracked Gross + Advance Sales",
-                attachment_paths=aggregated_files + snapshot_files,
-                sections=[
-                    {"label": "A. Tracked Gross + Advance Sales", "note": "Cumulative gross.", "files": aggregated_files},
-                    {"label": "B. Advance Sales (Remaining)", "note": "Current snapshot.", "files": snapshot_files},
-                ]
-            )
-        else:
-            send_collection_report(
-                report_type="states", movie_name=movie_name, show_date=show_date_fmt,
-                subject_label="Advance Sales", attachment_paths=aggregated_files
-            )
+        generate_hybrid_states_html_report(
+            final_data,
+            "reports/latest.html",
+            movie_name=movie_name,
+            show_date=show_date_fmt
+        )
 
         total_elapsed = time.monotonic() - start_time
         print(f"\n🏁 Complete in {total_elapsed/60:.1f} minutes. Output: {base_name}")
